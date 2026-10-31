@@ -1,0 +1,134 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include <ESPmDNS.h>
+#include "BluetoothSerial.h"
+
+// --- Configurações de Rede ---
+const char* ssid = "WiFi-LMA";
+const char* password = "@ufam.lma";
+WebServer server(80);
+
+// --- Configurações Bluetooth ---
+BluetoothSerial SerialBT;
+const char* PIN_BLUETOOTH = "1234";
+
+// Endereços MAC dos Arduinos
+uint8_t ADDR_ARDUINO_1[6] = {0x98, 0xD3, 0x31, 0x70, 0x6E, 0x9F}; 
+uint8_t ADDR_ARDUINO_2[6] = {0x00, 0x14, 0x01, 0x21, 0x21, 0x22}; 
+
+String webLog = ""; // Buffer dinâmico
+bool systemRunning = false;
+
+// --- Funções de Conexão Bluetooth ---
+void conectarAoArduino(int num, uint8_t mac[]) {
+  if (SerialBT.connected()) {
+    SerialBT.disconnect();
+    delay(500);
+  }
+  webLog += "[SISTEMA] Tentando conectar ao Arduino " + String(num) + "...\n";
+  
+  if (SerialBT.connect(mac)) {
+    webLog += "[SISTEMA] ✅ CONECTADO com sucesso!\n";
+  } else {
+    webLog += "[SISTEMA] ❌ FALHA na conexao Bluetooth.\n";
+  }
+}
+
+// --- Handlers do Servidor Web ---
+
+// Endpoint de Log Otimizado (Incremental)
+void handleLog() {
+  if (webLog.length() > 0) {
+    server.send(200, "text/plain", webLog);
+    webLog = ""; // Limpa a memória após enviar para o Python
+  } else {
+    server.send(200, "text/plain", "");
+  }
+}
+
+void handleSend() {
+  if (server.hasArg("command")) {
+    String cmd = server.arg("command");
+    
+    // Lógica de Sincronização /play
+    if (cmd == "/play") {
+      webLog = ""; // Limpa logs antigos para o Python resetar o gráfico
+      systemRunning = true;
+    } else if (cmd == "/stop") {
+      systemRunning = false;
+    }
+
+    // Processamento de seleção ou repasse de comando
+    if (cmd == "/select 1") {
+      conectarAoArduino(1, ADDR_ARDUINO_1);
+    } else if (cmd == "/select 2") {
+      conectarAoArduino(2, ADDR_ARDUINO_2);
+    } else if (SerialBT.connected()) {
+      SerialBT.println(cmd);
+      webLog += "[CMD] " + cmd + "\n";
+    }
+  }
+  server.send(200, "text/plain", "OK");
+}
+
+void handleRoot() {
+  String html = "<html><head><meta charset='UTF-8'><title>Gateway Térmico</title></head>";
+  html += "<body><h1>ESP32 Gateway Online</h1>";
+  html += "<p>Hostname: <b>esp-thermal.local</b></p>";
+  html += "<p>IP: " + WiFi.localIP().toString() + "</p>";
+  html += "<pre id='l' style='background:#eee;padding:10px;'>Aguardando dados...</pre>";
+  html += "<script>setInterval(()=>fetch('/log').then(r=>r.text()).then(t=>{if(t){document.getElementById('l').innerText+=t;}}), 2000);</script>";
+  html += "</body></html>";
+  server.send(200, "text/html", html);
+}
+
+void setup() {
+  Serial.begin(115200);
+  
+  // 1. Conexão WiFi
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  
+  // 2. Informações de Rede e MAC
+  String mac = WiFi.macAddress();
+  Serial.println("\nWiFi OK!");
+  Serial.println("IP: " + WiFi.localIP().toString());
+  Serial.println("MAC: " + mac);
+  
+  // 3. Configuração mDNS (esp-thermal.local)
+  if (MDNS.begin("esp-thermal")) {
+    MDNS.addService("http", "tcp", 80);
+    Serial.println("mDNS: esp-thermal.local ativo");
+  }
+
+  // 4. Inicialização Bluetooth
+  SerialBT.begin("ESP32_Gateway", true);
+  SerialBT.setPin(PIN_BLUETOOTH, 4);
+
+  // 5. Rotas do Servidor
+  server.on("/", handleRoot);
+  server.on("/log", handleLog);
+  server.on("/send", handleSend);
+  server.on("/clear", [](){ webLog = ""; server.send(200, "text/plain", "Log Reset"); });
+  
+  server.begin();
+  webLog = "[SISTEMA] Gateway Pronto. MAC: " + mac + "\n";
+}
+
+void loop() {
+  server.handleClient();
+
+  // Leitura do Bluetooth (Não-bloqueante)
+  while (SerialBT.available()) {
+    char c = SerialBT.read();
+    webLog += c;
+    
+    // Proteção de segurança contra transbordo de String
+    if (webLog.length() > 3000) {
+      webLog = webLog.substring(1500); 
+    }
+  }
+}

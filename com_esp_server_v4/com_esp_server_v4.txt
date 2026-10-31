@@ -1,0 +1,148 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include <ESPmDNS.h>
+#include "BluetoothSerial.h"
+
+// --- Configurações de Rede ---
+const char* ssid = "WiFi-LMA";
+const char* password = "@ufam.lma";
+WebServer server(80);
+
+// --- Configurações Bluetooth ---
+BluetoothSerial SerialBT;
+const char* PIN_BLUETOOTH = "1234";
+
+uint8_t ADDR_ARDUINO_1[6] = {0x98, 0xD3, 0x31, 0x70, 0x6E, 0x9F}; 
+uint8_t ADDR_ARDUINO_2[6] = {0x00, 0x14, 0x01, 0x21, 0x21, 0x22}; 
+
+String webLog = ""; 
+bool systemRunning = false;
+
+// --- Funções Auxiliares ---
+
+// Adiciona cabeçalhos padrão para performance e compatibilidade
+void addStandardHeaders() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");        // Permite acesso de qualquer origem (CORS)
+  server.sendHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
+  server.sendHeader("Connection", "keep-alive");                // Mantém a conexão TCP aberta (mais rápido)
+  server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate"); // Evita cache de dados antigos
+}
+
+void conectarAoArduino(int num, uint8_t mac[]) {
+  if (SerialBT.connected()) SerialBT.disconnect();
+  delay(500);
+  
+  webLog += "[SISTEMA] A ligar ao Arduino " + String(num) + "...\n";
+  
+  if (SerialBT.connect(mac)) {
+    webLog += "[SISTEMA] ✅ CONECTADO!\n";
+  } else {
+    webLog += "[SISTEMA] ❌ FALHA!\n";
+  }
+}
+
+// --- Handlers Otimizados ---
+
+// GET: Apenas LEITURA de dados
+void handleLog() {
+  addStandardHeaders();
+  
+  if (webLog.length() > 0) {
+    server.send(200, "text/plain", webLog);
+    webLog = ""; // Limpa a memória após o consumo
+  } else {
+    server.send(200, "text/plain", "");
+  }
+}
+
+// POST: Apenas COMANDOS (Mudança de Estado)
+void handleSend() {
+  addStandardHeaders();
+
+  // Tratamento para requisição OPTIONS (Pre-flight do navegador)
+  if (server.method() == HTTP_OPTIONS) {
+    server.send(200);
+    return;
+  }
+
+  // Se não for POST, rejeita (Segurança Semântica)
+  if (server.method() != HTTP_POST) {
+    server.send(405, "text/plain", "Method Not Allowed. Use POST.");
+    return;
+  }
+
+  if (server.hasArg("command")) {
+    String cmd = server.arg("command");
+    
+    // Log de feedback
+    webLog += "[GATEWAY] Repassando: " + cmd + "\n";
+
+    if (cmd == "/play") {
+      webLog = ""; // Limpa log antigo para inicio limpo
+      systemRunning = true;
+    } else if (cmd == "/stop") {
+      systemRunning = false;
+    }
+
+    // Lógica de envio
+    if (cmd == "/select 1") conectarAoArduino(1, ADDR_ARDUINO_1);
+    else if (cmd == "/select 2") conectarAoArduino(2, ADDR_ARDUINO_2);
+    else if (SerialBT.connected()) {
+      SerialBT.println(cmd);
+    } else {
+      webLog += "[ERRO] Bluetooth desconectado.\n";
+    }
+  }
+  server.send(200, "text/plain", "OK");
+}
+
+void handleRoot() {
+  addStandardHeaders();
+  String html = "<html><head><meta charset='UTF-8'><title>Gateway IoT</title></head>";
+  html += "<body><h1>ESP32 Gateway (Modo Otimizado)</h1>";
+  html += "<p>Use a interface Python para operar este dispositivo.</p>";
+  html += "<p>Status: <b>Online</b> | Host: <b>esp-thermal.local</b></p>";
+  html += "</body></html>";
+  server.send(200, "text/html", html);
+}
+
+void setup() {
+  Serial.begin(115200);
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
+
+  String mac = WiFi.macAddress();
+  Serial.println("\nWiFi OK! IP: " + WiFi.localIP().toString());
+  
+  if (MDNS.begin("esp-thermal")) {
+    MDNS.addService("http", "tcp", 80);
+  }
+
+  SerialBT.begin("ESP32_Gateway", true);
+  SerialBT.setPin(PIN_BLUETOOTH, 4);
+
+  // Definição Estrita das Rotas
+  server.on("/", HTTP_GET, handleRoot);
+  server.on("/log", HTTP_GET, handleLog);   // Apenas GET
+  server.on("/send", HTTP_POST, handleSend); // Apenas POST
+  server.on("/send", HTTP_OPTIONS, handleSend); // Para CORS
+  
+  // Rota de limpeza via POST
+  server.on("/clear", HTTP_POST, [](){ 
+    addStandardHeaders(); 
+    webLog = ""; 
+    server.send(200, "text/plain", "OK"); 
+  });
+  
+  server.begin();
+  webLog = "[SISTEMA] Gateway Pronto (HTTP Otimizado). MAC: " + mac + "\n";
+}
+
+void loop() {
+  server.handleClient();
+  while (SerialBT.available()) {
+    char c = SerialBT.read();
+    webLog += c;
+    if (webLog.length() > 3000) webLog = webLog.substring(1500);
+  }
+}
