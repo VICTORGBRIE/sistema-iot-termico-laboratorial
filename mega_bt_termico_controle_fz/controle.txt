@@ -1,0 +1,119 @@
+/*
+// =================================================================
+// MÓDULO 6: CONTROLADOR DIGITAL RST + LÓGICA FUZZY TAKAGI-SUGENO
+// =================================================================
+
+extern volatile float setpointTemp; 
+extern bool ensaioRunning;
+
+// =================================================================
+// BASE DE REGRAS FUZZY (Ganhos Locais Extraídos do MATLAB - Agressivo)
+// =================================================================
+// Planta 1 (Otimizado para região de 35 C | Ganho K = 1.9374)
+volatile float r0_1 = 57.3239, r1_1 = -43.3924;
+volatile float Tg_1 = 13.9315;
+
+// Planta 2 (Otimizado para região de 50 C | Ganho K = 1.0393)
+volatile float r0_2 = 93.5946, r1_2 = -70.8195;
+volatile float Tg_2 = 22.7751;
+
+// Planta 3 (Otimizado para região de 60 C | Ganho K = 0.8956)
+volatile float r0_3 = 132.9193, r1_3 = -100.6352; 
+volatile float Tg_3 = 32.2841;                
+
+// Graus de Pertinência Fuzzy
+volatile float p1 = 0.0;
+volatile float p2 = 0.0;
+volatile float p3 = 0.0;
+
+// Memória de Estados da Equação de Diferenças
+volatile float y[2] = {0.0, 0.0}; 
+volatile float u[2] = {0.0, 0.0}; 
+
+unsigned long lastControlTime = 0;
+const unsigned long Ts = 2000; // Amostragem de 2s
+
+void Controle_Init() {
+  float tempInicial = Sensor_GetTemp();
+  if (tempInicial <= 0 || tempInicial > 120) tempInicial = 25.0; 
+  
+  for(int i = 0; i < 2; i++) {
+    y[i] = tempInicial;
+    u[i] = 0.0;
+  }
+  analogWrite(PIN_FAN, 0); 
+}
+
+void Controle_Update() {
+  if (!ensaioRunning) {
+    lastControlTime = millis();
+    analogWrite(PIN_FAN, 0);
+    return;
+  }
+
+  if (millis() - lastControlTime >= Ts) {
+    lastControlTime = millis();
+
+    float tempAtual = Sensor_GetTemp();
+    if (tempAtual <= 0 || tempAtual > 120) return;
+
+    y[0] = tempAtual;
+
+    // ====================================================================
+    // ETAPA 1: FUZZIFICAÇÃO (Calcula o grau de pertinência T-S)
+    // Dinâmica dividida nos centros: 35 C, 50 C e 60 C
+    // ====================================================================
+    if (tempAtual <= 35.0) {
+      p1 = 1.0; p2 = 0.0; p3 = 0.0;
+    } 
+    else if (tempAtual > 35.0 && tempAtual < 50.0) {
+      p1 = (50.0 - tempAtual) / 15.0; // 15 eh a distancia entre 50 e 35
+      p2 = 1.0 - p1;
+      p3 = 0.0;
+    } 
+    else if (tempAtual == 50.0) {
+      p1 = 0.0; p2 = 1.0; p3 = 0.0;
+    } 
+    else if (tempAtual > 50.0 && tempAtual < 60.0) {
+      p2 = (60.0 - tempAtual) / 10.0; // 10 eh a distancia entre 60 e 50
+      p3 = 1.0 - p2;
+      p1 = 0.0;
+    } 
+    else if (tempAtual >= 60.0) {
+      p1 = 0.0; p2 = 0.0; p3 = 1.0;
+    }
+
+    // ====================================================================
+    // ETAPA 2: INFERÊNCIA TAKAGI-SUGENO (Média Ponderada)
+    // ====================================================================
+    float r0_fuzzy = (p1 * r0_1) + (p2 * r0_2) + (p3 * r0_3);
+    float r1_fuzzy = (p1 * r1_1) + (p2 * r1_2) + (p3 * r1_3);
+    float Tg_fuzzy = (p1 * Tg_1) + (p2 * Tg_2) + (p3 * Tg_3);
+
+    // ====================================================================
+    // ETAPA 3: APLICAÇÃO DA LEI DE CONTROLE 
+    // ====================================================================
+    u[0] = u[1] - (r0_fuzzy * y[0]) - (r1_fuzzy * y[1]) + (Tg_fuzzy * setpointTemp);
+
+    // Anti-Windup e Saturação Lógica
+    if (u[0] > 100.0) u[0] = 100.0;
+    if (u[0] < 0.0)   u[0] = 0.0;
+
+    // Freio Térmico com Ventoinha (Para evitar Overshoot na inércia)
+    float erro = setpointTemp - y[0];
+    if (erro <= -0.6) {
+      int fanPWM = map((int)(abs(erro) * 10), 6, 30, 100, 255);
+      analogWrite(PIN_FAN, constrain(fanPWM, 100, 255));
+    } else {
+      analogWrite(PIN_FAN, 0); 
+    }
+
+    // Atuação segura no Dimmer
+    Dimmer_SetPower((int)u[0]);
+
+    // Deslocamento de memória
+    u[1] = u[0];
+    y[1] = y[0];
+  }
+}
+*/
